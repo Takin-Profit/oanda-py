@@ -22,7 +22,6 @@ post_hooks:
 EOF
 fi
 
-# Check if openapi-python-client is installed
 if [ ! -f "$open_api_client" ]; then
     echo "Error: openapi-python-client not found at $open_api_client"
     echo "Please ensure it's installed in your virtual environment"
