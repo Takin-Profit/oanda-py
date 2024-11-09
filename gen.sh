@@ -10,12 +10,6 @@ ruff="./.venv/bin/ruff"
 oanda_api="./openapi.yaml"
 config="./openapi-client-config.yml"
 
-# Check if required files exist
-if [ ! -f "$oanda_api" ]; then
-    echo "Error: OpenAPI specification file not found at $oanda_api"
-    exit 1
-fi
-
 # Create config file if it doesn't exist
 if [ ! -f "$config" ]; then
     echo "Creating config file..."
@@ -23,8 +17,8 @@ if [ ! -f "$config" ]; then
 project_name_override: oanda-v20-client
 package_name_override: oanda_v20_client
 post_hooks:
-   - "$ruff check . --fix"
-   - "$ruff format ."
+  - "$ruff check . --fix"
+  - "$ruff format ."
 EOF
 fi
 
@@ -35,9 +29,17 @@ if [ ! -f "$open_api_client" ]; then
     exit 1
 fi
 
+# Run conversion script and wait for it to complete
+echo "Converting Swagger to OpenAPI 3.0..."
+node convert.js
+if [ ! -f "$oanda_api" ]; then
+    echo "Error: OpenAPI file not generated at $oanda_api"
+    exit 1
+fi
+
 # Generate the client
 echo "Generating Python client from OpenAPI specification..."
-if "$open_api_client" generate --path "$oanda_api" --config "$config" --overwrite; then
+if "$open_api_client" generate --path "$oanda_api" --config "$config" --overwrite --meta none; then
     echo "Successfully generated Python client!"
 else
     echo "Error: Failed to generate Python client"

@@ -6,5 +6,5 @@ project_name_override: oanda-v20-client
 package_name_override: oanda_v20_client
 literal_enums: true
 post_hooks:
-  - "ruff check . --fix"
+  - "ruff check . --fix --ignore E741"
   - "ruff format ."

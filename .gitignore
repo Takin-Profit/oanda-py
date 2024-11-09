@@ -1,3 +1,5 @@
+openapi.yaml
+oanda-v20-client
 # Python-generated files
 __pycache__/
 *.py[oc]
