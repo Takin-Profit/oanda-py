@@ -1,0 +1,13 @@
+[project]
+name = "oanda-py"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "openapi-python-client>=0.21.6",
+    "ruff>=0.7.3",
+]

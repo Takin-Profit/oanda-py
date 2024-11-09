@@ -1,0 +1,10 @@
+# Copyright 2024 Takin Profit. All rights reserved.
+# Use of this source code is governed by a BSD-style
+# license that can be found in the LICENSE file.
+
+project_name_override: oanda-v20-client
+package_name_override: oanda_v20_client
+literal_enums: true
+post_hooks:
+  - "ruff check . --fix"
+  - "ruff format ."
