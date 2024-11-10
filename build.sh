@@ -127,6 +127,7 @@ build() {
     mv models "src/${CLIENT_DIR}/"
     mv types.py "src/${CLIENT_DIR}/"
     mv __init__.py "src/${CLIENT_DIR}/"
+    touch "src/${CLIENT_DIR}/py.typed"
 
     # Create pyproject.toml and README.md in the root
     cat >README.md <<'EOF'
@@ -163,14 +164,13 @@ dependencies = [
     "httpx>=0.20.0,<0.28.0",
     "attrs>=21.3.0",
     "python-dateutil>=2.8.0",
+    "dacite>=1.8.1"
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build]
-packages = ["src/oanda_v20_client"]
 EOF
 
     bump_version
