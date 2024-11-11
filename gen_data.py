@@ -1,5 +1,6 @@
 import ast
 import asyncio
+import re
 from pathlib import Path
 
 import aiofiles
@@ -10,26 +11,53 @@ INPUT_DIR = SCRIPT_DIR / PKG_NAME / "src" / PKG_NAME / "models"
 OUTPUT_DIR = SCRIPT_DIR / PKG_NAME / "src" / PKG_NAME / "dataclasses"
 
 
+def fix_docstring(docstring: str | None) -> str | None:
+    """Fix type references in docstrings."""
+    if not docstring:
+        return docstring
+    # Replace Union[Unset, X] with Optional[X] in docstrings
+    return docstring.replace("Union[Unset, ", "Optional[")
+
+
 def get_imports_from_tree(tree: ast.AST) -> list[str]:
     imports = set()  # Changed to set to prevent duplicates
+    typing_imports = set()  # Separate set for typing imports
+
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             if node.module:
                 names = ", ".join(n.name for n in node.names)
-                if "models." in node.module:
-                    # Use relative imports instead of pydantic
+                if node.module == "typing":
+                    typing_imports.add(f"from typing import {names}")
+                elif "models." in node.module:
                     imports.add(f"from .{node.module.split('.')[-1]} import {names}")
-                else:
+                elif node.module != "types":  # Skip types imports
                     imports.add(f"from {node.module} import {names}")
         elif isinstance(node, ast.Import):
             for name in node.names:
                 imports.add(f"import {name.name}")
-    return sorted(imports)  # Convert back to sorted list
+
+    # Merge typing imports
+    typing_names = set()
+    for imp in typing_imports:
+        names = imp.replace("from typing import ", "").split(", ")
+        typing_names.update(names)
+
+    # Remove Dict and Any as they're in default imports
+    typing_names.discard("Dict")
+    typing_names.discard("Any")
+
+    # Always include Optional in typing imports
+    typing_names.add("Optional")
+
+    if typing_names:
+        imports.add(f"from typing import {', '.join(sorted(typing_names))}")
+
+    return sorted(imports)
 
 
-async def generate_pydantic_models(input_dir: Path, output_dir: Path):
+async def generate_dataclasses(input_dir: Path, output_dir: Path):
     output_dir.mkdir(parents=True, exist_ok=True)
-    await generate_unset_module(output_dir)
     (output_dir / "__init__.py").touch()
 
     tasks = [
@@ -40,25 +68,46 @@ async def generate_pydantic_models(input_dir: Path, output_dir: Path):
     await asyncio.gather(*tasks)
 
 
-async def generate_unset_module(output_dir: Path):
-    content = "from typing import Literal\n\nclass Unset:\n    def __bool__(self) -> Literal[False]:\n        return False\n\nUNSET: Unset = Unset()"
-    async with aiofiles.open(output_dir / "types.py", "w") as f:
-        await f.write(content)
-
-
 def generate_to_dict_method() -> str:
-    return '''
-    def to_dict(self) -> Dict[str, Any]:
+    return '''def to_dict(self) -> Dict[str, Any]:
         """Convert the dataclass instance to a dictionary."""
         return dataclasses.asdict(self)'''
 
 
-def generate_from_dict_method(class_name: str) -> str:
-    return f'''
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "{class_name}":
-        """Create a new instance from a dictionary."""
-        return from_dict(data_class=cls, data=data)'''
+def find_from_dict_method(tree: ast.AST) -> ast.ClassDef | None:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for item in node.body:
+                if (
+                    isinstance(item, ast.FunctionDef)
+                    and item.name == "from_dict"
+                    and any(
+                        d.id == "classmethod"
+                        for d in item.decorator_list
+                        if isinstance(d, ast.Name)
+                    )
+                ):
+                    return item
+    return None
+
+
+def adapt_from_dict_method(method_node: ast.ClassDef) -> str:
+    """Convert the original from_dict method to use Optional and None instead of Union[Unset, ...] and UNSET."""
+    source = ast.unparse(method_node)
+    # Replace Union[Unset, with Optional[
+    source = source.replace("Union[Unset, ", "Optional[")
+    # Replace UNSET with None
+    source = source.replace("UNSET", "None")
+    # Replace all Unset instance checks using regex
+    source = re.sub(r"isinstance\(([^,]+), Unset\)", r"\1 is None", source)
+    # Fix imports to be relative
+    source = source.replace("from ..models.", "from .")
+    # Remove any remaining imports of Unset
+    source = re.sub(r"from [\w.]+\s+import\s+.*?Unset.*?\n", "", source)
+    # Remove additional_properties assignments
+    lines = source.split("\n")
+    filtered_lines = [line for line in lines if "additional_properties" not in line]
+    return "\n".join(filtered_lines)
 
 
 async def process_file(file: Path, output_dir: Path):
@@ -72,7 +121,6 @@ async def process_file(file: Path, output_dir: Path):
         "from __future__ import annotations",
         "from typing import Dict, Any",
         "import dataclasses",
-        "from dacite import from_dict",
     ]
 
     if imports := get_imports_from_tree(tree):
@@ -83,7 +131,7 @@ async def process_file(file: Path, output_dir: Path):
     for node in tree.body:
         if isinstance(node, ast.ClassDef):
             # Handle class definitions
-            docstring = ast.get_docstring(node)
+            docstring = fix_docstring(ast.get_docstring(node))
             class_lines = ["\n@dataclasses.dataclass", f"class {node.name}:"]
             if docstring:
                 class_lines.append(f'    """{docstring}"""')
@@ -96,21 +144,26 @@ async def process_file(file: Path, output_dir: Path):
                         continue
 
                     annotation = ast.unparse(n.annotation)
-                    default = (
-                        " = UNSET"
-                        if not n.value
-                        or (isinstance(n.value, ast.Name) and n.value.id == "UNSET")
-                        else f" = {ast.unparse(n.value)}"
-                    )
+                    annotation = annotation.replace("Union[Unset, ", "Optional[")
+                    class_lines.append(f"    {name}: {annotation}")
 
-                    class_lines.append(f"    {name}: {annotation}{default}")
+            # Find and adapt the original from_dict method
+            if original_from_dict := find_from_dict_method(node):
+                adapted_from_dict = adapt_from_dict_method(original_from_dict)
+                # Ensure proper indentation for the method
+                lines = adapted_from_dict.split("\n")
+                indented_lines = [
+                    f"    {line}" if line.strip() else line for line in lines
+                ]
+                class_lines.append("\n" + "\n".join(indented_lines))
 
-            class_lines.extend(
-                (
-                    generate_to_dict_method(),
-                    generate_from_dict_method(node.name),
-                )
-            )
+            # Add to_dict method with proper indentation
+            to_dict_lines = generate_to_dict_method().split("\n")
+            indented_to_dict = [
+                f"    {line}" if line.strip() else line for line in to_dict_lines
+            ]
+            class_lines.append("\n" + "\n".join(indented_to_dict))
+
             output_lines.extend(class_lines)
 
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -128,4 +181,4 @@ async def process_file(file: Path, output_dir: Path):
 
 
 if __name__ == "__main__":
-    asyncio.run(generate_pydantic_models(INPUT_DIR, OUTPUT_DIR))
+    asyncio.run(generate_dataclasses(INPUT_DIR, OUTPUT_DIR))
